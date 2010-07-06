@@ -9,17 +9,11 @@ import java.net.InetSocketAddress
 package object compflow {
   
   type Computation = (Unit => Unit)
-  
-  def startNode(address: InetSocketAddress)(implicit scheduler: Scheduler): Node = {
-    val n = new Node(address)
-    n.start
-    n
-  }
-  
-  def relocate(address: InetSocketAddress)(implicit scheduler: Scheduler, implicit dispatcher: Dispatcher): Unit @dataflow = {
-    shift { k: Computation => flow {
-      new NodeRef(address) send Message(k)
-      ()
-    }}
+    
+  def relocate(node: NodeRef)(implicit scheduler: Scheduler): Unit @dataflow = {
+    shift { k: Computation =>
+       flow { node send ResumeMsg(k) }
+       ()
+    }
   }
 }

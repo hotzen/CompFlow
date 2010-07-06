@@ -3,30 +3,57 @@ package compflow
 import compflow.Computation
 import java.io.{ObjectOutputStream, ByteArrayOutputStream}
 
-case class Message(k: Computation) {
+object ProtoUtil {
+  
+  def IntToBytes(i: Int): Array[Byte] =
+    Array[Byte](
+     (i >>> 24).toByte,
+     (i >>> 16).toByte,
+     (i >>> 8).toByte,
+     (i >>> 0).toByte
+    )
+    
+  def BytesToInt(bs: Seq[Byte]): Int = {
+    assert(bs.length >= 4)
+    
+      (bs(0)         << 24) +
+    ( (bs(1) & 0xFF) << 16) +
+    ( (bs(2) & 0xFF) << 8 ) +
+      (bs(3) & 0xFF)
+  }
+}
 
+trait Message {
+  def toBytes: Array[Byte]
+}
+
+object ResumeMsg {
+  val ID: Byte = 1
+}
+case class ResumeMsg(k: Computation) extends Message {
   // HEADER:  BYTE
-  // LENGTH:  INT
+  // SIZE:    INT
   // PAYLOAD: BYTE, BYTE, ...
-  val HEADER: Byte = 1
-    
   def toBytes: Array[Byte] = {
-    val d = serialize(k)
-    val dlen = d.length
+    val data    = serialize(k)
+    val datalen = data.length
     
-    val msgSize = 1 + 4 + dlen
+    val msgSize = 1 + 4 + datalen
     
     val bs = new Array[Byte](msgSize)
-    bs(0) = HEADER
-    bs(1) = (dlen >>> 24).toByte
-    bs(2) = (dlen >>> 16).toByte
-    bs(3) = (dlen >>> 8).toByte
-    bs(4) = (dlen >>> 0).toByte
+    bs(0) = ResumeMsg.ID
     
-    var i = 5
-    d.foreach(b => {
+    val size = ProtoUtil.IntToBytes(msgSize)
+    var i = 1
+    size.foreach(b => {
       bs(i) = b
       i = i + 1
+    })
+    
+    var j = 5
+    data.foreach(b => {
+      bs(j) = b
+      j = j + j
     })
     
     bs
