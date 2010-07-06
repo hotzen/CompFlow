@@ -7,12 +7,20 @@ import scala.util.continuations._
 import java.net.InetSocketAddress
 
 package object compflow {
-  
-  type Computation = (Unit => Unit)
     
+  def relocate(address: InetSocketAddress)(implicit scheduler: Scheduler, dispatcher: Dispatcher): Unit @dataflow = {
+    val node = new NodeRef(address)
+    node.process
+    relocate(node)
+  }
+  
   def relocate(node: NodeRef)(implicit scheduler: Scheduler): Unit @dataflow = {
-    shift { k: Computation =>
-       flow { node send ResumeMsg(k) }
+    shift { k: CompMsg.Computation =>
+       flow {
+         println("relocating...")
+         node send CompMsg(k)
+         println("relocated.")
+       }
        ()
     }
   }

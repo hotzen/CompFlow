@@ -1,5 +1,7 @@
 package compflow
 
+import CompMsg.Computation
+
 import dataflow._
 import io.{Dispatcher, Socket, Acceptor}
 import java.net.InetSocketAddress
@@ -10,13 +12,17 @@ class NodeRef(val address: InetSocketAddress)(implicit val scheduler: Scheduler,
   
   val socket = new Socket
   
-  def start: SuspendingAwait @dataflow = {
+  def process: SuspendingAwait @dataflow = {
     socket.connect(address)
     socket.process
   }
     
-  def send(msg: Message): Unit @dataflow =
-    socket.write << msg.toBytes    
+  def send(msg: CompMsg): Unit @dataflow = {
+    socket.write << msg.toBytes
+  }
+        
+    
+  override def toString = "<NodeRef " + address + ">"
 }
 
 class Node(val address: InetSocketAddress)(implicit val scheduler: Scheduler) extends dataflow.util.Logging {
@@ -25,116 +31,78 @@ class Node(val address: InetSocketAddress)(implicit val scheduler: Scheduler) ex
   implicit val dispatcher = new Dispatcher
   private val acceptor = new Acceptor
   
-  private val msgs = Channel.create[Message]
-  
-  def start: SuspendingAwait = {
+  private val computations = Channel.create[Computation]
+    
+  def process: BlockingAwait = {
     Dispatcher.createThread(dispatcher).start
     acceptor.accept(address)
-  }
-  
-  def process: BlockingAwait = {
-    start
     
     flow {
       acceptor.connections.foreach(socket => flow {
         socket.read.foreach(processBytes(_))
-        msgs.<<#
       })
+      computations.<<#
     }
     
     flow {
-      msgs.foreach(msg => msg match {
-        case ResumeMsg(k) => {
-          log info ("Resume-Msg, resuming...")
-          k()
-        }
-        case x => {
-          log warn ("unknown message " + x)
-        }
-      })
+      computations.foreach(k => {
+        log info ("received computation, resuming...")
+        k()
+      }) 
     }
   }
-  
-  
   
   private val bytes = new ArrayBuffer[Byte]( Socket.ReadBufferSize )
   
-  // Left(true):  Parser is able to parse it but data is missing
-  // Left(false): Parser is not able to parse it
-  private val parsers = List[() => Either[Boolean,Message]](
-    parseResumeMsg _   
-  )
-  
   private def processBytes(bs: Array[Byte]): Unit @dataflow = {
     bytes ++= bs
-    
-    val msgs = parse()
-    println("processBytes: " + msgs)
-    
-    ()
+   
+    val it = parse.iterator
+    while (it.hasNext) {
+      computations << it.next()
+    }
+      
   }
   
-  def parse(): List[Message] = {
-    var msgs: List[Message] = Nil
+  private def parse: List[Computation] = {
+    var ks: List[Computation] = Nil
     
     var continue = true
-    while (bytes.length > 0 && continue) {
-      log trace ("bytes=" + bytes.length + ", parsing roud...")
-      var handled = false
-      val it = parsers.iterator
-      
-      while (!handled && it.hasNext) {
-        val parser = it.next
-        parser.apply match {
-          case Left(true) => {
-            log trace ("parser is able to handle but data is missing, suspending")
-            handled  = true
-            continue = false
+    while (continue) parseNext match {
+      case (true, Some(k)) =>
+        ks = k :: ks
+      case (false, _) =>
+        continue = false
+    }
+   
+    ks.reverse
+  }
+  
+  private def parseNext: (Boolean,Option[Computation]) = {
+    CompMsg.parseHeader(bytes) match {
+      case Some(size) => {
+        CompMsg.parseData(bytes, size) match {
+          case Some(k) => {
+            log trace ("got computation!")
+            bytes.remove(0, CompMsg.HeaderSize + size)
+            (true, Some(k))
           }
-          case Left(false) => {
-            log trace ("parser is NOT able to handle data")
-          }
-          case Right(msg) => {
-            msgs ::= msg
-            handled = true
+          case None => {
+            log trace ("no data (yet)")
+            (false, None)
           }
         }
       }
-      
-      if (!handled) {
-        log trace ("no parser was able to handle data, suspending")
-        continue = false
+      case None => {
+        log error ("no header, bytes left: " + bytes.length)
+        (false, None)
       }
     }
-    
-    log trace ("parse finished/suspended, bytes=" + bytes.length)
-    msgs.reverse
-  }
-  
-  def parseResumeMsg: Either[Boolean,Message] = {
-    if (bytes.length < 5)
-      return Left(true)
-    
-    if (bytes(0) != ResumeMsg.ID)
-      return Left(false)
-    
-    val size = ProtoUtil.BytesToInt( bytes.view(1,5) )
-    val totalMsgSize = 1 + 4 + size
-    
-    if (bytes.length < totalMsgSize)
-      return Left(true)
-    
-    val dataBytes = bytes.view(5, totalMsgSize).toArray
-    bytes.remove(0, totalMsgSize)
-    
-    val bis = new java.io.ByteArrayInputStream(dataBytes)
-    val ois = new java.io.ObjectInputStream(bis)
-        
-    val o = ois.readObject 
-    Right( o.asInstanceOf[ResumeMsg] )
   }
   
   def shutdown = {
     acceptor.shutdown
   }
+  
+  override def toString = "<Node " + address + ">"
 }
